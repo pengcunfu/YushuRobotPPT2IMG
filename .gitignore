@@ -2,3 +2,5 @@ results/
 uploads/
 __pycache__/
 .idea/
+config.yaml
+.pytest_cache/
