@@ -7,12 +7,55 @@ import os
 import io
 from datetime import timedelta
 from typing import Optional, BinaryIO, Union, Tuple
+from dataclasses import dataclass, asdict
 from minio import Minio
 from minio.error import S3Error
 from fastapi import UploadFile, HTTPException
 from loguru import logger
 
 from config import get_config
+
+
+@dataclass
+class UploadResult:
+    """上传结果模型"""
+    success: bool
+    bucket_name: str
+    object_name: str
+    etag: str
+    size: int
+    content_type: str
+    download_url: str
+    error: Optional[str] = None
+    
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'UploadResult':
+        """从字典创建实例"""
+        return cls(**data)
+
+
+@dataclass
+class PresignedUrlResult:
+    """预签名URL结果模型"""
+    success: bool
+    url: str
+    bucket_name: str
+    object_name: str
+    expires_in: int
+    error: Optional[str] = None
+    
+    def to_dict(self) -> dict:
+        """转换为字典"""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'PresignedUrlResult':
+        """从字典创建实例"""
+        return cls(**data)
 
 
 class MinioService:
@@ -51,7 +94,7 @@ class MinioService:
             file: Union[UploadFile, BinaryIO, bytes],
             object_name: str,
             bucket_name: str = "images"
-    ) -> dict:
+    ) -> UploadResult:
         """
         上传图片到MinIO
         
@@ -61,7 +104,7 @@ class MinioService:
             bucket_name: 存储桶名称，默认为"images"
             
         Returns:
-            dict: 上传结果信息
+            UploadResult: 上传结果信息
         """
         try:
             # 确保存储桶存在
@@ -89,19 +132,40 @@ class MinioService:
             # 生成预签名URL用于直接下载
             download_url = self._generate_presigned_url(object_name, bucket_name)
 
-            return {
-                "success": True,
-                "bucket_name": bucket_name,
-                "object_name": object_name,
-                "etag": etag,
-                "size": file_size,
-                "content_type": content_type,
-                "download_url": download_url
-            }
+            return UploadResult(
+                success=True,
+                bucket_name=bucket_name,
+                object_name=object_name,
+                etag=etag,
+                size=file_size,
+                content_type=content_type,
+                download_url=download_url
+            )
 
         except S3Error as e:
             logger.error(f"上传图片失败: {e}")
-            raise HTTPException(status_code=500, detail=f"上传图片失败: {e}")
+            return UploadResult(
+                success=False,
+                bucket_name=bucket_name,
+                object_name=object_name,
+                etag="",
+                size=0,
+                content_type="",
+                download_url="",
+                error=str(e)
+            )
+        except Exception as e:
+            logger.error(f"上传图片时发生未知错误: {e}")
+            return UploadResult(
+                success=False,
+                bucket_name=bucket_name,
+                object_name=object_name,
+                etag="",
+                size=0,
+                content_type="",
+                download_url="",
+                error=str(e)
+            )
 
     def _prepare_file_data(self, file: Union[UploadFile, BinaryIO, bytes]) -> Tuple[BinaryIO, int]:
         """
@@ -147,7 +211,7 @@ class MinioService:
             # 检查对象是否存在
             if not self.client.bucket_exists(bucket_name):
                 logger.error(f"存储桶不存在: {bucket_name}")
-                raise HTTPException(status_code=404, detail=f"存储桶不存在: {bucket_name}")
+                raise Exception(f"存储桶不存在: {bucket_name}")
 
             # 检查对象是否存在
             try:
@@ -155,7 +219,7 @@ class MinioService:
                 logger.info(f"对象存在: {bucket_name}/{object_name}")
             except S3Error as e:
                 logger.error(f"对象不存在: {bucket_name}/{object_name} - {e}")
-                raise HTTPException(status_code=404, detail=f"对象不存在: {bucket_name}/{object_name}")
+                raise Exception(f"对象不存在: {bucket_name}/{object_name}")
 
             # 将秒数转换为timedelta对象
             expires = timedelta(seconds=expires_in)
@@ -169,10 +233,10 @@ class MinioService:
             return url
         except S3Error as e:
             logger.error(f"生成预签名URL失败: {e}")
-            raise HTTPException(status_code=500, detail=f"生成预签名URL失败: {e}")
+            raise Exception(f"生成预签名URL失败: {e}")
         except Exception as e:
             logger.error(f"生成预签名URL时发生未知错误: {e}")
-            raise HTTPException(status_code=500, detail=f"生成预签名URL时发生未知错误: {e}")
+            raise Exception(f"生成预签名URL时发生未知错误: {e}")
 
     def _guess_image_content_type(self, filename: str) -> str:
         """
@@ -205,7 +269,7 @@ class MinioService:
 minio_service = MinioService()
 
 
-async def test_server():
+async def run_server():
     """测试MinIO服务功能"""
     print("🧪 测试MinIO服务...")
 
@@ -220,11 +284,17 @@ async def test_server():
             object_name="real_slide_1.png",
             bucket_name="images"
         )
-        print(f"✅ 真实图片上传成功: {result}")
-
-        # 测试预签名URL（从上传结果中获取）
-        print("🔗 上传结果中的预签名URL:")
-        print(f"✅ 预签名URL: {result['download_url']}")
+        
+        if result.success:
+            print(f"✅ 真实图片上传成功:")
+            print(f"   存储桶: {result.bucket_name}")
+            print(f"   对象名: {result.object_name}")
+            print(f"   大小: {result.size} 字节")
+            print(f"   内容类型: {result.content_type}")
+            print(f"   下载URL: {result.download_url}")
+        else:
+            print(f"❌ 上传失败: {result.error}")
+            
     except FileNotFoundError:
         print("❌ 找不到文件 out/slide_1.png")
         print("💡 请确保文件存在，或者使用其他图片文件进行测试")
@@ -235,4 +305,4 @@ async def test_server():
 
 
 if __name__ == '__main__':
-    asyncio.run(test_server())
+    asyncio.run(run_server())

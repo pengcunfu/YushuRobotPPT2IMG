@@ -3,9 +3,57 @@ import uuid
 import pythoncom
 import win32com.client
 from PIL import Image
+from dataclasses import dataclass, asdict
+from typing import List, Dict, Any
 
 
-def pptx_to_images(pptx_path: str, output_dir: str, width=1920, height=1080):
+@dataclass
+class ImageInfo:
+    """图片信息模型"""
+    slide_number: int
+    filename: str
+    filepath: str
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ImageInfo':
+        """从字典创建实例"""
+        return cls(**data)
+
+
+@dataclass
+class PPTConversionResult:
+    """PPT转换结果模型"""
+    success: bool
+    total_slides: int
+    converted_slides: int
+    image_info_list: List[ImageInfo]
+    pptx_path: str
+    output_dir: str
+    width: int
+    height: int
+    error: str = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        result_dict = asdict(self)
+        # 将ImageInfo对象转换为字典
+        result_dict['image_info_list'] = [info.to_dict() for info in self.image_info_list]
+        return result_dict
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PPTConversionResult':
+        """从字典创建实例"""
+        # 将字典列表转换为ImageInfo对象列表
+        image_info_list = [ImageInfo.from_dict(info_dict) for info_dict in data['image_info_list']]
+        data['image_info_list'] = image_info_list
+        return cls(**data)
+
+
+def pptx_to_images(pptx_path: str, output_dir: str, width=1920, height=1080) -> PPTConversionResult:
     """
     使用PowerPoint COM接口直接将PPT导出为图片
     
@@ -16,10 +64,12 @@ def pptx_to_images(pptx_path: str, output_dir: str, width=1920, height=1080):
         height: 导出图片高度（像素），设为0时根据宽度按比例自动计算
         
     Returns:
-        list: 按顺序排列的图片信息列表，每个元素包含：
-            - "slide_number": 幻灯片编号
-            - "filename": UUID文件名
-            - "filepath": 完整文件路径
+        PPTConversionResult: 转换结果对象，包含：
+            - success: 是否成功
+            - total_slides: 总幻灯片数
+            - converted_slides: 成功转换的幻灯片数
+            - image_info_list: 图片信息列表
+            - error: 错误信息（如果有）
     """
     # 转换为绝对路径
     pptx_path = os.path.abspath(pptx_path)
@@ -30,7 +80,17 @@ def pptx_to_images(pptx_path: str, output_dir: str, width=1920, height=1080):
 
     # 验证PPT文件路径
     if not os.path.exists(pptx_path):
-        raise FileNotFoundError(f"PPT文件不存在: {pptx_path}")
+        return PPTConversionResult(
+            success=False,
+            total_slides=0,
+            converted_slides=0,
+            image_info_list=[],
+            pptx_path=pptx_path,
+            output_dir=output_dir,
+            width=width,
+            height=height,
+            error=f"PPT文件不存在: {pptx_path}"
+        )
 
     # 确保输出目录存在
     os.makedirs(output_dir, exist_ok=True)
@@ -40,8 +100,8 @@ def pptx_to_images(pptx_path: str, output_dir: str, width=1920, height=1080):
     ppt_app = win32com.client.Dispatch("PowerPoint.Application")
 
     image_info_list = []
-
     presentation = None
+    
     try:
         # 打开PPT文件
         print(f"打开PPT文件...")
@@ -95,17 +155,41 @@ def pptx_to_images(pptx_path: str, output_dir: str, width=1920, height=1080):
                         os.rename(temp_path, img_path)
 
             # 添加到图片信息列表
-            image_info_list.append({
-                "slide_number": i,
-                "filename": filename,
-                "filepath": img_path
-            })
+            image_info = ImageInfo(
+                slide_number=i,
+                filename=filename,
+                filepath=img_path
+            )
+            image_info_list.append(image_info)
 
         print("所有幻灯片导出完成!")
+        
+        # 返回成功结果
+        return PPTConversionResult(
+            success=True,
+            total_slides=presentation.Slides.Count,
+            converted_slides=len(image_info_list),
+            image_info_list=image_info_list,
+            pptx_path=pptx_path,
+            output_dir=output_dir,
+            width=width,
+            height=height
+        )
 
     except Exception as e:
         print(f"错误: {str(e)}")
-        raise
+        # 返回失败结果
+        return PPTConversionResult(
+            success=False,
+            total_slides=presentation.Slides.Count if presentation else 0,
+            converted_slides=len(image_info_list),
+            image_info_list=image_info_list,
+            pptx_path=pptx_path,
+            output_dir=output_dir,
+            width=width,
+            height=height,
+            error=str(e)
+        )
     finally:
         # 确保关闭演示文稿
         if presentation is not None:
@@ -128,21 +212,23 @@ def pptx_to_images(pptx_path: str, output_dir: str, width=1920, height=1080):
         except Exception as e:
             print(f"释放COM组件时出错: {str(e)}")
 
-    return image_info_list
-
 
 # 使用示例
 if __name__ == "__main__":
     output_dir = "out/" + str(uuid.uuid4())
     # 直接调用转换函数
-    image_info_list = pptx_to_images(
+    result = pptx_to_images(
         pptx_path="examples/1.pptx",
         output_dir=output_dir,
         width=1920,  # 宽度1920像素
         height=1080  # 高度1080像素，设为0可按原始比例自动计算
     )
 
-    print(f"成功导出 {len(image_info_list)} 张图片到 {output_dir}")
-    print("按顺序排列的图片信息:")
-    for info in image_info_list:
-        print(f"  幻灯片 {info['slide_number']}: {info['filename']} -> {info['filepath']}")
+    if result.success:
+        print(f"✅ 成功导出 {result.converted_slides}/{result.total_slides} 张图片到 {result.output_dir}")
+        print("按顺序排列的图片信息:")
+        for info in result.image_info_list:
+            print(f"  幻灯片 {info.slide_number}: {info.filename} -> {info.filepath}")
+    else:
+        print(f"❌ 转换失败: {result.error}")
+        print(f"已转换: {result.converted_slides}/{result.total_slides} 张图片")

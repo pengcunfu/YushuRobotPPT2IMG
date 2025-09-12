@@ -1,6 +1,6 @@
 from loguru import logger
 
-from websocket_server_v2 import init_socketio_events, socketio, app
+from websocket_server import init_socketio_events, socketio, app
 
 
 def start_flask_server(host='0.0.0.0', port=8020, debug=False):

@@ -11,7 +11,7 @@ from loguru import logger
 
 from pptx_to_images import pptx_to_images
 from minio_service import minio_service
-from download import download_file
+from minio_download import download_file
 
 
 async def pptx_url_to_minio_images(
@@ -69,13 +69,17 @@ async def pptx_url_to_minio_images(
         logger.info("🖼️ 正在将PPT转换为图片...")
         temp_output_dir = os.path.join(temp_dir, "images")
 
-        image_info_list = pptx_to_images(
+        conversion_result = pptx_to_images(
             pptx_path=temp_pptx_path,
             output_dir=temp_output_dir,
             width=width,
             height=height
         )
 
+        if not conversion_result.success:
+            raise Exception(f"PPT转换失败: {conversion_result.error}")
+
+        image_info_list = conversion_result.image_info_list
         logger.info(f"✅ 转换完成，生成 {len(image_info_list)} 张图片")
 
         # 3. 上传图片到MinIO
@@ -85,38 +89,37 @@ async def pptx_url_to_minio_images(
 
         for image_info in image_info_list:
             # 使用PPT名称和UUID文件名作为对象名称
-            object_name = f"/{ppt_name}/{image_info['filename']}"
+            object_name = f"/{ppt_name}/{image_info.filename}"
 
             # 读取图片文件
-            with open(image_info['filepath'], "rb") as f:
+            with open(image_info.filepath, "rb") as f:
                 image_data = f.read()
 
             # 上传到MinIO
-            try:
-                result = await minio_service.upload_image(
-                    file=image_data,
-                    object_name=object_name,
-                    bucket_name=bucket_name
-                )
+            result = await minio_service.upload_image(
+                file=image_data,
+                object_name=object_name,
+                bucket_name=bucket_name
+            )
 
+            if result.success:
                 upload_results.append({
-                    "slide_number": image_info['slide_number'],
-                    "filename": image_info['filename'],
+                    "slide_number": image_info.slide_number,
+                    "filename": image_info.filename,
                     "object_name": object_name,
-                    "size": result["size"],
-                    "download_url": result["download_url"]
+                    "size": result.size,
+                    "download_url": result.download_url
                 })
-                download_urls.append(result["download_url"])
+                download_urls.append(result.download_url)
 
-                logger.info(f"✅ 幻灯片 {image_info['slide_number']} 上传成功: {object_name}")
-
-            except Exception as e:
-                logger.error(f"❌ 幻灯片 {image_info['slide_number']} 上传失败: {e}")
+                logger.info(f"✅ 幻灯片 {image_info.slide_number} 上传成功: {object_name}")
+            else:
+                logger.error(f"❌ 幻灯片 {image_info.slide_number} 上传失败: {result.error}")
                 upload_results.append({
-                    "slide_number": image_info['slide_number'],
-                    "filename": image_info['filename'],
+                    "slide_number": image_info.slide_number,
+                    "filename": image_info.filename,
                     "object_name": object_name,
-                    "error": str(e)
+                    "error": result.error
                 })
 
         # 4. 统计结果
