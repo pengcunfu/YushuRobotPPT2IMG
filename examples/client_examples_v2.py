@@ -8,14 +8,11 @@ import time
 import uuid
 from loguru import logger
 
-# 配置日志
-logger.add("test_client_v2.log", rotation="1 MB", level="DEBUG")
-
 
 class PPTProcessingClient:
     """PPT处理客户端"""
 
-    def __init__(self, server_url="http://localhost:8020"):
+    def __init__(self, server_url="http://8.149.241.205:8020"):
         self.server_url = server_url
         self.sio = socketio.Client()
         self.current_task = None
@@ -64,12 +61,12 @@ class PPTProcessingClient:
             print(f"   总幻灯片数: {data['total_slides']}")
             print(f"   成功处理: {data['processed_slides']}")
             print(f"   下载URL数量: {len(data['download_urls'])}")
-            
+
             # 显示所有下载URL
             print(f"\n📥 所有下载URLs:")
             for i, url in enumerate(data['download_urls']):
                 print(f"   {i + 1:2d}. {url}")
-            
+
             print(f"\n✅ 测试完成！共获得 {len(data['download_urls'])} 个图片下载链接")
 
         @self.sio.event
@@ -77,6 +74,9 @@ class PPTProcessingClient:
             logger.error(f"任务失败: {data}")
             print(f"❌ 任务失败:")
             print(f"   UUID: {data['uuid']}")
+            if 'ppt_name' in data:
+                print(f"   PPT名称: {data['ppt_name']}")
+            print(f"   状态: {data['status']}")
             print(f"   错误: {data['error']}")
             print(f"   消息: {data['message']}")
 
@@ -84,6 +84,23 @@ class PPTProcessingClient:
         def error(data):
             logger.error(f"服务器错误: {data}")
             print(f"❌ 服务器错误: {data['message']}")
+
+        @self.sio.event
+        def task_status(data):
+            """处理任务状态查询响应"""
+            logger.info(f"任务状态: {data}")
+            print(f"📊 任务状态:")
+            print(f"   UUID: {data['uuid']}")
+            print(f"   PPT名称: {data['ppt_name']}")
+            print(f"   状态: {data['status']}")
+            print(f"   进度: {data.get('progress', 0)}%")
+            if data.get('total_slides', 0) > 0:
+                print(f"   幻灯片: {data.get('processed_slides', 0)}/{data['total_slides']}")
+            if data.get('download_urls'):
+                print(f"   下载链接数量: {len(data['download_urls'])}")
+            if data.get('error'):
+                print(f"   错误: {data['error']}")
+            print(f"   消息: {data['message']}")
 
     def connect(self):
         """连接到服务器"""
@@ -99,14 +116,13 @@ class PPTProcessingClient:
         """断开连接"""
         self.sio.disconnect()
 
-    def start_ppt_processing(self, ppt_url, ppt_name, width=1920, height=1080, bucket_name="images"):
+    def start_ppt_processing(self, ppt_url, ppt_name, width=1920, height=1080):
         """启动PPT处理任务"""
         task_data = {
             "ppt_url": ppt_url,
             "ppt_name": ppt_name,
             "width": width,
-            "height": height,
-            "bucket_name": bucket_name
+            "height": height
         }
 
         logger.info(f"发送处理请求: {task_data}")
@@ -114,9 +130,31 @@ class PPTProcessingClient:
         print(f"   URL: {ppt_url}")
         print(f"   名称: {ppt_name}")
         print(f"   尺寸: {width}x{height}")
-        print(f"   存储桶: {bucket_name}")
+        print(f"   存储桶: images (服务器固定设置)")
 
         self.sio.emit('start_ppt_processing', task_data)
+
+    def join_task(self, task_uuid):
+        """加入现有任务的房间"""
+        task_data = {
+            "uuid": task_uuid
+        }
+
+        logger.info(f"加入任务: {task_data}")
+        print(f"🔗 加入任务: {task_uuid}")
+
+        self.sio.emit('join_task', task_data)
+
+    def get_task_status(self, task_uuid):
+        """获取任务状态"""
+        task_data = {
+            "uuid": task_uuid
+        }
+
+        logger.info(f"查询任务状态: {task_data}")
+        print(f"📊 查询任务状态: {task_uuid}")
+
+        self.sio.emit('get_task_status', task_data)
 
 
 def main():
@@ -128,6 +166,8 @@ def main():
     print("   - 发送PPT URL和名称")
     print("   - 接收处理进度更新")
     print("   - 获取图片下载链接")
+    print("   - 支持任务状态查询")
+    print("   - 支持加入现有任务")
     print("=" * 50)
 
     # 创建客户端
@@ -140,13 +180,13 @@ def main():
 
     try:
         # 使用测试数据（参考pptx_to_images_minio.py的测试函数）
-        test_url = "http://8.153.175.16:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2RvY3VtZW50cy8lRTQlQjklOUQlRTQlQjglODklRTklOTglODUlRTUlODUlQjUtQUklRTYlQUQlQTYlRTUlOTklQTgucHB0eD9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPTVMRTc3UzdGOUZEVkdEMzRYTzg5JTJGMjAyNTA5MTIlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUwOTEyVDAyNTc0N1omWC1BbXotRXhwaXJlcz00MzIwMCZYLUFtei1TZWN1cml0eS1Ub2tlbj1leUpoYkdjaU9pSklVelV4TWlJc0luUjVjQ0k2SWtwWFZDSjkuZXlKaFkyTmxjM05MWlhraU9pSTFURVUzTjFNM1JqbEdSRlpIUkRNMFdFODRPU0lzSW1WNGNDSTZNVGMxTnpZNE5qVTJPU3dpY0dGeVpXNTBJam9pYldsdWFXOWhaRzFwYmlKOS4xY1JmWEJTSWJnT3dmdUI4OXRlczB3MFlQanFRLXFBeW1mMk5CS0lwWWhCbnd2TUtsUUl2d25JLVdNSGUxOXNDSWJ2aGY4bDhtVG5aZ25NWmNuckdMUSZYLUFtei1TaWduZWRIZWFkZXJzPWhvc3QmdmVyc2lvbklkPW51bGwmWC1BbXotU2lnbmF0dXJlPTcxY2E5YzViMTU5N2Y1OGZkMjc5NzkzN2MyNWUwNzY5ZmQ1ZTUxZjEyNmQ1Njk3N2I1MmY3MmE5Mzg3OWI0ZTA"
+        test_url = "http://8.153.175.16:9001/api/v1/download-shared-object/aHR0cDovLzEyNy4wLjAuMTo5MDAwL2RhdGEvJUU0JUI5JTlEJUU0JUI4JTg5JUU5JTk4JTg1JUU1JTg1JUI1LUFJJUU2JUFEJUE2JUU1JTk5JUE4LnBwdHg_WC1BbXotQWxnb3JpdGhtPUFXUzQtSE1BQy1TSEEyNTYmWC1BbXotQ3JlZGVudGlhbD1TSTJQV1c4V1dBM1A1U0tUQUlXWCUyRjIwMjUwOTEyJTJGdXMtZWFzdC0xJTJGczMlMkZhd3M0X3JlcXVlc3QmWC1BbXotRGF0ZT0yMDI1MDkxMlQxNjQwNDNaJlgtQW16LUV4cGlyZXM9NDMxOTkmWC1BbXotU2VjdXJpdHktVG9rZW49ZXlKaGJHY2lPaUpJVXpVeE1pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SmhZMk5sYzNOTFpYa2lPaUpUU1RKUVYxYzRWMWRCTTFBMVUwdFVRVWxYV0NJc0ltVjRjQ0k2TVRjMU56Y3pPRFF6TWl3aWNHRnlaVzUwSWpvaWJXbHVhVzloWkcxcGJpSjkuMDVaZFlKS3hEa2pjMGdVeFltTDdPeldjRnVkS01QVGE3d2hhSVFTaWhJdnZLMG5HcF9EYVRieW5QS2NBS0ZvMjdxZ3FqWWdxX0JvU0VwWnBoU3hkaVEmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JnZlcnNpb25JZD1udWxsJlgtQW16LVNpZ25hdHVyZT0xZDMxNTQ2OTMyMzdmZjgzNzgyNTdkYWJjMDljMDc5ZjYyZGJlMzQyMzM2NDA3MGRiOTU3M2VhOTUwZmViNzU0"
         test_name = str(uuid.uuid4())  # 使用UUID作为PPT名称
-        
+
         print(f"\n🚀 使用测试数据:")
         print(f"   URL: {test_url[:100]}...")
         print(f"   名称: {test_name}")
-        
+
         # 启动处理任务
         client.start_ppt_processing(
             ppt_url=test_url,
@@ -156,10 +196,31 @@ def main():
         )
 
         # 等待处理完成
-        print("\n⏳ 等待处理完成... (按Ctrl+C中断)")
+        print("\n⏳ 等待处理完成...")
+        print("💡 提示: 按Ctrl+C中断，或输入命令:")
+        print("   - 'status <uuid>' 查询任务状态")
+        print("   - 'join <uuid>' 加入现有任务")
+        print("   - 'quit' 退出程序")
+
         try:
             while True:
-                time.sleep(1)
+                user_input = input("\n> ").strip()
+                if user_input.lower() == 'quit':
+                    break
+                elif user_input.startswith('status '):
+                    task_uuid = user_input[7:].strip()
+                    if task_uuid:
+                        client.get_task_status(task_uuid)
+                    else:
+                        print("❌ 请提供任务UUID")
+                elif user_input.startswith('join '):
+                    task_uuid = user_input[5:].strip()
+                    if task_uuid:
+                        client.join_task(task_uuid)
+                    else:
+                        print("❌ 请提供任务UUID")
+                elif user_input:
+                    print("❌ 未知命令，请输入 'status <uuid>', 'join <uuid>' 或 'quit'")
         except KeyboardInterrupt:
             print("\n⏹️ 用户中断")
 

@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package ppt_service;
+
+option go_package = "ppt-to-images-service/proto";
+
+// PPT转图片服务
+service PPTToImagesService {
+    // 上传PPT文件并转换为图片
+    rpc ConvertPPT(ConvertPPTRequest) returns (stream ConvertPPTResponse);
+    
+    // 获取转换状态
+    rpc GetConversionStatus(StatusRequest) returns (StatusResponse);
+    
+    // 下载转换后的图片
+    rpc DownloadImage(DownloadRequest) returns (stream DownloadResponse);
+}
+
+// 转换请求
+message ConvertPPTRequest {
+    string filename = 1;           // 文件名
+    bytes ppt_data = 2;            // PPT文件数据
+    int32 width = 3;               // 输出图片宽度
+    int32 height = 4;              // 输出图片高度
+    string output_format = 5;      // 输出格式 (PNG, JPEG)
+}
+
+// 转换响应 (流式)
+message ConvertPPTResponse {
+    oneof response {
+        ConversionStatus status = 1;    // 状态信息
+        ImageInfo image_info = 2;       // 图片信息
+        ConversionResult result = 3;    // 最终结果
+    }
+}
+
+// 转换状态
+message ConversionStatus {
+    string status = 1;             // 状态: processing, completed, failed
+    int32 progress = 2;            // 进度百分比 (0-100)
+    string message = 3;            // 状态消息
+    int32 total_slides = 4;        // 总幻灯片数
+    int32 processed_slides = 5;    // 已处理幻灯片数
+}
+
+// 图片信息
+message ImageInfo {
+    int32 slide_number = 1;        // 幻灯片编号
+    string filename = 2;           // 文件名
+    int64 file_size = 3;           // 文件大小
+    string download_id = 4;        // 下载ID
+}
+
+// 转换结果
+message ConversionResult {
+    bool success = 1;              // 是否成功
+    string message = 2;            // 结果消息
+    int32 total_slides = 3;        // 总幻灯片数
+    int32 converted_slides = 4;    // 成功转换的幻灯片数
+    repeated ImageInfo images = 5; // 图片信息列表
+    string error = 6;              // 错误信息 (如果有)
+}
+
+// 状态查询请求
+message StatusRequest {
+    string conversion_id = 1;      // 转换ID
+}
+
+// 状态查询响应
+message StatusResponse {
+    ConversionStatus status = 1;   // 当前状态
+    ConversionResult result = 2;   // 结果 (如果完成)
+}
+
+// 下载请求
+message DownloadRequest {
+    string download_id = 1;        // 下载ID
+}
+
+// 下载响应 (流式)
+message DownloadResponse {
+    oneof response {
+        DownloadInfo info = 1;     // 下载信息
+        bytes chunk = 2;           // 数据块
+    }
+}
+
+// 下载信息
+message DownloadInfo {
+    string filename = 1;           // 文件名
+    int64 file_size = 2;           // 文件大小
+    string content_type = 3;       // 内容类型
+}

@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PPT转图片服务测试页面</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fafafa;
+        }
+        .section h3 {
+            margin-top: 0;
+            color: #555;
+        }
+        input[type="file"] {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            width: 100%;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .info {
+            background-color: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        .image-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .image-item {
+            text-align: center;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background: white;
+        }
+        .image-item img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 3px;
+        }
+        .progress {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-bar {
+            height: 100%;
+            background-color: #007bff;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 PPT转图片服务测试页面</h1>
+        
+        <!-- 上传区域 -->
+        <div class="section">
+            <h3>📁 1. 上传PPT文件</h3>
+            <input type="file" id="pptFile" accept=".ppt,.pptx">
+            <button onclick="uploadFile()" id="uploadBtn">上传文件</button>
+            <div id="uploadResult" class="result" style="display: none;"></div>
+        </div>
+        
+        <!-- 转换区域 -->
+        <div class="section">
+            <h3>🔄 2. 转换PPT为图片</h3>
+            <div>
+                <label>宽度: <input type="number" id="width" value="1920" min="100" max="4000"></label>
+                <label>高度: <input type="number" id="height" value="1080" min="100" max="4000"></label>
+            </div>
+            <button onclick="convertPPT()" id="convertBtn" disabled>开始转换</button>
+            <div class="progress" id="progressContainer" style="display: none;">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div id="convertResult" class="result" style="display: none;"></div>
+        </div>
+        
+        <!-- 图片展示区域 -->
+        <div class="section">
+            <h3>🖼️ 3. 转换结果</h3>
+            <div id="imageGrid" class="image-grid"></div>
+        </div>
+        
+        <!-- 状态区域 -->
+        <div class="section">
+            <h3>📊 4. 会话状态</h3>
+            <button onclick="getStatus()" id="statusBtn" disabled>获取状态</button>
+            <div id="statusResult" class="result" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:5000';
+        let currentSessionId = null;
+        
+        // 显示结果
+        function showResult(elementId, message, type = 'info') {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.className = `result ${type}`;
+            element.style.display = 'block';
+        }
+        
+        // 更新进度条
+        function updateProgress(percent) {
+            const container = document.getElementById('progressContainer');
+            const bar = document.getElementById('progressBar');
+            container.style.display = 'block';
+            bar.style.width = percent + '%';
+        }
+        
+        // 上传文件
+        async function uploadFile() {
+            const fileInput = document.getElementById('pptFile');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showResult('uploadResult', '请选择PPT文件', 'error');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                showResult('uploadResult', '正在上传...', 'info');
+                
+                const response = await fetch(`${API_BASE}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    currentSessionId = result.session_id;
+                    document.getElementById('convertBtn').disabled = false;
+                    document.getElementById('statusBtn').disabled = false;
+                    showResult('uploadResult', `上传成功！\n会话ID: ${result.session_id}\n文件名: ${result.filename}`, 'success');
+                } else {
+                    showResult('uploadResult', `上传失败: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showResult('uploadResult', `上传错误: ${error.message}`, 'error');
+            }
+        }
+        
+        // 转换PPT
+        async function convertPPT() {
+            if (!currentSessionId) {
+                showResult('convertResult', '请先上传文件', 'error');
+                return;
+            }
+            
+            const width = document.getElementById('width').value;
+            const height = document.getElementById('height').value;
+            
+            try {
+                showResult('convertResult', '正在转换...', 'info');
+                updateProgress(10);
+                
+                const response = await fetch(`${API_BASE}/convert/${currentSessionId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        width: parseInt(width),
+                        height: parseInt(height)
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    updateProgress(100);
+                    showResult('convertResult', `转换完成！\n总幻灯片: ${result.total_slides}\n成功转换: ${result.converted_slides}`, 'success');
+                    displayImages(result.images);
+                } else {
+                    showResult('convertResult', `转换失败: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showResult('convertResult', `转换错误: ${error.message}`, 'error');
+            }
+        }
+        
+        // 显示图片
+        function displayImages(images) {
+            const grid = document.getElementById('imageGrid');
+            grid.innerHTML = '';
+            
+            images.forEach(img => {
+                const item = document.createElement('div');
+                item.className = 'image-item';
+                
+                const imgElement = document.createElement('img');
+                imgElement.src = `${API_BASE}/stream/${currentSessionId}/${img.filename}`;
+                imgElement.alt = `幻灯片 ${img.slide_number}`;
+                imgElement.onerror = function() {
+                    this.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjE1MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZGRkIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPuWbvueJh+WKoOi9veWksei0pTwvdGV4dD48L3N2Zz4=';
+                };
+                
+                const label = document.createElement('div');
+                label.textContent = `幻灯片 ${img.slide_number}`;
+                
+                const downloadBtn = document.createElement('button');
+                downloadBtn.textContent = '下载';
+                downloadBtn.onclick = () => downloadImage(img.filename);
+                
+                item.appendChild(imgElement);
+                item.appendChild(label);
+                item.appendChild(downloadBtn);
+                grid.appendChild(item);
+            });
+        }
+        
+        // 下载图片
+        function downloadImage(filename) {
+            const link = document.createElement('a');
+            link.href = `${API_BASE}/download/${currentSessionId}/${filename}`;
+            link.download = filename;
+            link.click();
+        }
+        
+        // 获取状态
+        async function getStatus() {
+            if (!currentSessionId) {
+                showResult('statusResult', '请先上传文件', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/status/${currentSessionId}`);
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showResult('statusResult', JSON.stringify(result, null, 2), 'info');
+                } else {
+                    showResult('statusResult', `获取状态失败: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showResult('statusResult', `获取状态错误: ${error.message}`, 'error');
+            }
+        }
+        
+        // 页面加载完成后的初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('PPT转图片服务测试页面已加载');
+        });
+    </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 # Web Framework and API
 Flask==2.3.3
+Flask-CORS==4.0.0
 Flask-SocketIO==5.3.6
 Werkzeug==2.3.7
 python-socketio==5.9.0

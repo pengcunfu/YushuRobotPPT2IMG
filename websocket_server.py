@@ -7,6 +7,7 @@ import os
 import time
 import threading
 import queue
+import re
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -62,24 +63,24 @@ def init_socketio_events():
         """启动PPT处理任务"""
         try:
             # 解析请求数据
-            request = PPTProcessingRequest.from_dict(data)
+            ppt_request = PPTProcessingRequest.from_dict(data)
         except Exception as e:
             error_response = ErrorResponse(message=f'请求数据格式错误: {str(e)}')
             emit('error', error_response.to_dict())
             return
 
         # 验证必需参数
-        if not request.ppt_url or not request.ppt_name:
+        if not ppt_request.ppt_url or not ppt_request.ppt_name:
             error_response = ErrorResponse(message='缺少必需参数: ppt_url 和 ppt_name')
             emit('error', error_response.to_dict())
             return
 
         # 创建任务数据（bucket_name在服务器端固定设置）
         task_data = TaskData.create_new(
-            ppt_url=request.ppt_url,
-            ppt_name=request.ppt_name,
-            width=request.width,
-            height=request.height,
+            ppt_url=ppt_request.ppt_url,
+            ppt_name=ppt_request.ppt_name,
+            width=ppt_request.width,
+            height=ppt_request.height,
             bucket_name="images"  # 固定使用images存储桶
         )
 
@@ -142,25 +143,25 @@ def init_socketio_events():
         """加入现有任务的房间"""
         try:
             # 解析请求数据
-            request = TaskJoinRequest.from_dict(data)
+            join_request = TaskJoinRequest.from_dict(data)
         except Exception as e:
             error_response = ErrorResponse(message=f'请求数据格式错误: {str(e)}')
             emit('error', error_response.to_dict())
             return
 
         with tasks_lock:
-            if not request.uuid or request.uuid not in tasks:
+            if not join_request.uuid or join_request.uuid not in tasks:
                 error_response = ErrorResponse(message='无效的任务UUID')
                 emit('error', error_response.to_dict())
                 return
 
-            task = tasks[request.uuid]
+            task = tasks[join_request.uuid]
 
-        room_id = f"task_{request.uuid}"
+        room_id = f"task_{join_request.uuid}"
         join_room(room_id)
 
         with connections_lock:
-            connection_info = ConnectionInfo(room=room_id, uuid=request.uuid)
+            connection_info = ConnectionInfo(room=room_id, uuid=join_request.uuid)
             active_connections[request.sid] = connection_info
 
         # 发送当前任务状态
@@ -181,19 +182,19 @@ def init_socketio_events():
         """获取任务状态"""
         try:
             # 解析请求数据
-            request = TaskStatusRequest.from_dict(data)
+            status_request = TaskStatusRequest.from_dict(data)
         except Exception as e:
             error_response = ErrorResponse(message=f'请求数据格式错误: {str(e)}')
             emit('error', error_response.to_dict())
             return
 
         with tasks_lock:
-            if not request.uuid or request.uuid not in tasks:
+            if not status_request.uuid or status_request.uuid not in tasks:
                 error_response = ErrorResponse(message='无效的任务UUID')
                 emit('error', error_response.to_dict())
                 return
 
-            task = tasks[request.uuid]
+            task = tasks[status_request.uuid]
 
         response = TaskStatusResponse(
             uuid=task.uuid,
@@ -236,6 +237,41 @@ def process_ppt_task(task_uuid, room_id, socketio):
         )
         socketio.emit('progress_update', progress_response.to_dict(), room=room_id)
 
+        # 定义进度回调函数
+        def progress_callback(stage, message, progress):
+            """进度回调函数"""
+            # 根据阶段更新任务信息
+            with tasks_lock:
+                if task_uuid in tasks:
+                    current_task = tasks[task_uuid]
+                    current_task.progress = progress
+                    
+                    # 如果是转换完成阶段，更新幻灯片数量
+                    if stage == "convert" and "生成" in message:
+                        # 从消息中提取幻灯片数量
+                        match = re.search(r'生成 (\d+) 张图片', message)
+                        if match:
+                            current_task.total_slides = int(match.group(1))
+                    
+                    # 如果是上传阶段，更新已处理数量
+                    elif stage == "upload" and "正在上传图片" in message:
+                        # 从消息中提取当前上传进度
+                        match = re.search(r'正在上传图片 \((\d+)/(\d+)\)', message)
+                        if match:
+                            current_task.processed_slides = int(match.group(1))
+                            if current_task.total_slides == 0:
+                                current_task.total_slides = int(match.group(2))
+            
+            progress_response = ProgressUpdateResponse(
+                uuid=task_uuid,
+                status='processing',
+                progress=progress,
+                total_slides=task.total_slides,
+                processed_slides=task.processed_slides,
+                message=f"[{stage.upper()}] {message}"
+            )
+            socketio.emit('progress_update', progress_response.to_dict(), room=room_id)
+
         # 调用PPT转图片并上传到MinIO的函数
         import asyncio
         result = asyncio.run(pptx_url_to_minio_images(
@@ -243,49 +279,32 @@ def process_ppt_task(task_uuid, room_id, socketio):
             ppt_name=task.ppt_name,
             bucket_name=task.bucket_name,
             width=task.width,
-            height=task.height
+            height=task.height,
+            progress_callback=progress_callback
         ))
 
-        if result['success']:
-            # 处理成功
-            with tasks_lock:
-                task.status = 'completed'
-                task.total_slides = result['total_slides']
-                task.processed_slides = result['successful_uploads']
-                task.progress = 100
-                task.download_urls = result['download_urls']
-                task.completed_at = time.time()
+        # 处理成功（如果函数正常返回，说明没有异常）
+        with tasks_lock:
+            task.status = 'completed'
+            task.total_slides = result.total_slides
+            task.processed_slides = result.successful_uploads
+            task.progress = 100
+            task.download_urls = result.download_urls
+            task.completed_at = time.time()
 
-            logger.info(f'任务 {task_uuid} 完成: 成功处理 {result["successful_uploads"]} 张图片')
+        logger.info(f'任务 {task_uuid} 完成: 成功处理 {result.successful_uploads} 张图片')
 
-            complete_response = TaskCompleteResponse(
-                uuid=task_uuid,
-                ppt_name=task.ppt_name,
-                status='completed',
-                progress=100,
-                total_slides=result['total_slides'],
-                processed_slides=result['successful_uploads'],
-                download_urls=result['download_urls'],
-                message=f'PPT处理完成！生成了 {result["successful_uploads"]} 张图片'
-            )
-            socketio.emit('task_complete', complete_response.to_dict(), room=room_id)
-
-        else:
-            # 处理失败
-            with tasks_lock:
-                task.status = 'failed'
-                task.error = result['error']
-
-            logger.error(f'任务 {task_uuid} 失败: {result["error"]}')
-
-            error_response = TaskErrorResponse(
-                uuid=task_uuid,
-                ppt_name=task.ppt_name,
-                status='failed',
-                error=result['error'],
-                message=f'PPT处理失败: {result["error"]}'
-            )
-            socketio.emit('task_error', error_response.to_dict(), room=room_id)
+        complete_response = TaskCompleteResponse(
+            uuid=task_uuid,
+            ppt_name=task.ppt_name,
+            status='completed',
+            progress=100,
+            total_slides=result.total_slides,
+            processed_slides=result.successful_uploads,
+            download_urls=result.download_urls,
+            message=f'PPT处理完成！生成了 {result.successful_uploads} 张图片'
+        )
+        socketio.emit('task_complete', complete_response.to_dict(), room=room_id)
 
     except Exception as e:
         # 任务异常
